@@ -7,13 +7,12 @@ jobs:
     runs-on: ${{ matrix.os }}
     strategy:
       matrix:
-        os: [ubuntu-18.04, ubuntu-latest]
+        os: [ubuntu-20.04, ubuntu-latest]
         env:
         - TEST_KUBERNETES_BACKEND: minikube
         - TEST_KUBERNETES_BACKEND: kind
     steps:
-    - uses: actions/checkout@v2
-    - run: git fetch --prune --unshallow # We want tags
+    - uses: actions/checkout@v4
 
     - name: Initialize workflow variables
       id: vars
@@ -30,6 +29,19 @@ jobs:
           echo GIT_ORG=${git_org} >> $GITHUB_ENV
       env:
         QUAY_TOKEN: ${{ secrets.QUAY_TOKEN }}
+
+    - name: Fetch Tags
+      run: |
+        git fetch --prune --unshallow
+        if [[ "$GIT_ORG" != iovisor ]]; then
+          git remote add upstream https://github.com/iovisor/kubectl-trace.git
+          git fetch upstream --tags
+        fi
+
+    - name: Set up Go
+      uses: actions/setup-go@v5
+      with:
+        go-version: '>=1.19.0'
 
     - name: Run tests
       run: |
@@ -51,13 +63,12 @@ jobs:
       env: ${{matrix.env}}
       if: ${{ env.TEST_KUBERNETES_BACKEND == 'minikube' }}
       run: |
-        curl -LO https://storage.googleapis.com/minikube/releases/latest/minikube-linux-amd64
+        curl -LO https://storage.googleapis.com/minikube/releases/v1.31.2/minikube-linux-amd64
         sudo install minikube-linux-amd64 /usr/local/bin/minikube
 
     - name: Run integration tests
       env: ${{matrix.env}}
       run: |
-        sudo sysctl net/netfilter/nf_conntrack_max=131072 # https://github.com/kubernetes-sigs/kind/issues/2240
         make integration
 
 #    - name: Debug failure over SSH

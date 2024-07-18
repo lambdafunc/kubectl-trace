@@ -56,9 +56,10 @@ const (
 )
 
 var (
+	GitOrg                = os.Getenv("GIT_ORG")
 	ContainerDependencies = []string{
-		"quay.io/iovisor/target-ruby",
-		"quay.io/iovisor/kubectl-trace-init",
+		"quay.io/%s/target-ruby",
+		"quay.io/%s/kubectl-trace-init",
 	}
 )
 
@@ -95,6 +96,10 @@ func init() {
 	if KubernetesBackend == "" {
 		KubernetesBackend = KubernetesKindBackend
 	}
+
+	if GitOrg == "" {
+		GitOrg = "iovisor"
+	}
 }
 
 func (k *KubectlTraceSuite) RunnerImage() string {
@@ -130,7 +135,7 @@ func (k *KubectlTraceSuite) SetupSuite() {
 
 	fmt.Println("Pushing dependencies...")
 	for _, image := range ContainerDependencies {
-		k.tagAndPushIntegrationImage(image, "latest")
+		k.tagAndPushIntegrationImage(fmt.Sprintf(image, GitOrg), "latest")
 	}
 
 	fmt.Println("Setting up targets...")
@@ -229,6 +234,9 @@ func (k *KubectlTraceSuite) AfterTest(suiteName, testName string) {
 	if k.namespaces[testName].Passed {
 		// delete the namespace if the test passed
 		k.deleteNamespace(k.namespace())
+	} else {
+		k.printPodLogs(k.namespace())
+		k.printPodLogs(k.targetNamespace)
 	}
 	k.lastTest = ""
 }
@@ -303,6 +311,28 @@ func (k *KubectlTraceSuite) GetJobsInNamespace(namespace string) *batchv1.JobLis
 	return jobs
 }
 
+func (k *KubectlTraceSuite) printPodLogs(namespace string) {
+	clientConfig, err := clientcmd.BuildConfigFromFlags("", k.kubeConfigPath)
+	assert.Nil(k.T(), err)
+
+	clientset, err := kubernetes.NewForConfig(clientConfig)
+	assert.Nil(k.T(), err)
+
+	pods, err := clientset.CoreV1().Pods(namespace).List(context.TODO(), metav1.ListOptions{})
+
+	for _, p := range pods.Items {
+		fmt.Printf("~~ Pod: %s ~~\n", p.Name)
+		fmt.Printf("Status: %v\n", p.Status)
+
+		stream, err := clientset.CoreV1().Pods(namespace).GetLogs(p.Name, &apiv1.PodLogOptions{}).Stream(context.TODO())
+		if err != nil {
+			fmt.Printf("Failed to get pod logs: %v", err)
+		}
+		_, err = io.Copy(os.Stdout, stream)
+		assert.Nil(k.T(), err)
+	}
+}
+
 func (k *KubectlTraceSuite) namespace() string {
 	if k.lastTest == "" {
 		require.NotEmpty(k.T(), k.lastTest, "Programming error in test suite: lastTest not set on suite. This condition should be impossible to hit and is a bug if you see this.")
@@ -359,7 +389,7 @@ func (k *KubectlTraceSuite) runWithoutErrorWithStdin(input string, command strin
 }
 
 func (k *KubectlTraceSuite) createRubyTarget(namespace, name string, args ...string) (string, error) {
-	image := fmt.Sprintf("localhost:%d/iovisor/target-ruby:latest", RegistryRemotePort)
+	image := fmt.Sprintf("localhost:%d/%s/target-ruby:latest", RegistryRemotePort, GitOrg)
 	command := append([]string{"./fork-from-args"}, args...)
 
 	clientConfig, err := clientcmd.BuildConfigFromFlags("", k.kubeConfigPath)
@@ -423,8 +453,15 @@ func (k *KubectlTraceSuite) createRubyTarget(namespace, name string, args ...str
 				if !ok {
 					return
 				}
-				pod = events.Object.(*apiv1.Pod)
-				status = pod.Status
+				switch v := events.Object.(type) {
+				case *apiv1.Pod:
+					pod = v
+					status = pod.Status
+					break
+				default:
+					fmt.Printf("unexpected event waiting for pod: %T %v\n", v, v)
+					continue
+				}
 				if pod.Status.Phase != apiv1.PodPending {
 					w.Stop()
 				}
